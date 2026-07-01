@@ -11,7 +11,12 @@ def init_args():
 
 
 def init_sub_args(args):
-    dataset = "UBnormal" if args.dataset == "UBnormal" else "ShanghaiTech"
+    if args.dataset == "UBnormal":
+        dataset = "UBnormal"
+    elif args.dataset == "Avenue":
+        dataset = "Avenue"
+    else:
+        dataset = "ShanghaiTech"
     if args.vid_path_train and args.vid_path_test and args.pose_path_train and args.pose_path_test:
         args.vid_path = {'train': args.vid_path_train,
                          'test': args.vid_path_test}
@@ -39,7 +44,7 @@ def init_parser(default_data_dir='data/', default_exp_dir='data/exp_dir'):
     parser.add_argument('--vid_path_test', type=str, default=None, help='Path to test vids')
     parser.add_argument('--pose_path_test', type=str, default=None, help='Path to test pose')
     parser.add_argument('--dataset', type=str, default='ShanghaiTech',
-                        choices=['ShanghaiTech', 'ShanghaiTech-HR', 'UBnormal'], help='Dataset for Eval')
+                        choices=['ShanghaiTech', 'ShanghaiTech-HR', 'UBnormal', 'Avenue'], help='Dataset for Eval')
     parser.add_argument('--vid_res', type=str, default=None, help='Video Res')
     parser.add_argument('--device', type=str, default='cuda:0', metavar='DEV', help='Device for feature calculation (default: \'cuda:0\')')
     parser.add_argument('--seed', type=int, metavar='S', default=999, help='Random seed, use 999 for random (default: 999)')

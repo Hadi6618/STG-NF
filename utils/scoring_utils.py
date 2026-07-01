@@ -19,6 +19,14 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 
+def gt_root_for_dataset(dataset_name):
+    if dataset_name == 'UBnormal':
+        return 'data/UBnormal/gt/'
+    if dataset_name == 'Avenue':
+        return 'data/Avenue/gt/test_frame_mask/'
+    return 'data/ShanghaiTech/gt/test_frame_mask/'
+
+
 def score_dataset(score, metadata, args=None):
     gt_arr, scores_arr = get_dataset_scores(score, metadata, args=args)
     scores_arr = smooth_scores(scores_arr)
@@ -38,9 +46,9 @@ def get_dataset_scores(scores, metadata, args=None):
         clip_list = os.listdir(pose_segs_root)
         clip_list = sorted(
             fn.replace("alphapose_tracked_person.json", "tracks.txt") for fn in clip_list if fn.endswith('.json'))
-        per_frame_scores_root = 'data/UBnormal/gt/'
+        per_frame_scores_root = gt_root_for_dataset(args.dataset)
     else:
-        per_frame_scores_root = 'data/ShanghaiTech/gt/test_frame_mask/'
+        per_frame_scores_root = gt_root_for_dataset(args.dataset)
         clip_list = os.listdir(per_frame_scores_root)
         clip_list = sorted(fn for fn in clip_list if fn.endswith('.npy'))
 

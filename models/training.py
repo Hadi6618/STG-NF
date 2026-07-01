@@ -90,7 +90,10 @@ class Trainer:
     def load_checkpoint(self, filename):
         filename = filename
         try:
-            checkpoint = torch.load(filename)
+            try:
+                checkpoint = torch.load(filename, map_location=self.args.device, weights_only=False)
+            except TypeError:
+                checkpoint = torch.load(filename, map_location=self.args.device)
             self.start_epoch = checkpoint['epoch']
             self.model.load_state_dict(checkpoint['state_dict'], strict=False)
             self.model.set_actnorm_init()
