@@ -5,6 +5,8 @@ The based unit of graph convolutional networks., based on awesome previous work 
 import torch
 import torch.nn as nn
 
+from models.STG_NF.attention import build_attention_module
+
 
 class ConvTemporalGraphical(nn.Module):
     r"""The basic module for applying a graph convolution.
@@ -90,7 +92,17 @@ class st_gcn(nn.Module):
                  out_channels,
                  kernel_size,
                  stride=1,
-                 residual=True):
+                 residual=True,
+                 attention='none',
+                 attention_params=None):
+        """Args:
+            attention: One of ``'none'``, ``'dual'``, ``'triplet'``,
+                ``'skeleton'``, ``'frame'``.  ``'none'`` preserves the
+                original ST-GCN behaviour.
+            attention_params: Dict with keys ``'n_heads'``,
+                ``'n_mecatt_inside'``, ``'ctv_size'`` (tuple C,T,V),
+                ``'device'``.
+        """
         super().__init__()
 
         assert len(kernel_size) == 2
@@ -130,10 +142,31 @@ class st_gcn(nn.Module):
 
         self.relu = nn.ReLU(inplace=True)
 
+        # ---- optional attention module ----
+        self._n_mecatt = 1  # how many times to apply attention per forward
+        if attention != 'none' and attention_params is not None:
+            att_mod = build_attention_module(
+                attention_type=attention,
+                ctv_size=attention_params['ctv_size'],
+                n_heads=attention_params.get('n_heads', 1),
+                n_mecatt_inside=attention_params.get('n_mecatt_inside', 1),
+                device=attention_params.get('device', 'cuda:0'),
+            )
+            self.attention = att_mod  # registered as submodule (nn.Module or None)
+            self._n_mecatt = attention_params.get('n_mecatt', 1)
+        else:
+            self.attention = None
+
     def forward(self, x, A):
 
         res = self.residual(x)
         x, A = self.gcn(x, A)
         x = self.tcn(x) + res
+        x = self.relu(x)
 
-        return self.relu(x), A
+        # Optional attention after the standard GCN+TCN block
+        if self.attention is not None:
+            for _ in range(self._n_mecatt):
+                x = self.attention(x)
+
+        return x, A

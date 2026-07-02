@@ -34,16 +34,20 @@ def nan_throw(tensor, name="tensor"):
 
 
 def get_stgcn(in_channels, hidden_channels, out_channels,
-              temporal_kernel_size=9, spatial_kernel_size=2, first=False):
+              temporal_kernel_size=9, spatial_kernel_size=2, first=False,
+              attention='none', attention_params=None):
     kernel_size = (temporal_kernel_size, spatial_kernel_size)
     if hidden_channels == 0:
         block = nn.ModuleList((
-            st_gcn(in_channels, out_channels, kernel_size, 1, residual=(not first)),
+            st_gcn(in_channels, out_channels, kernel_size, 1, residual=(not first),
+                   attention=attention, attention_params=attention_params),
         ))
     else:
         block = nn.ModuleList((
-            st_gcn(in_channels, hidden_channels, kernel_size, 1, residual=(not first)),
-            st_gcn(hidden_channels, out_channels, kernel_size, 1, residual=(not first)),
+            st_gcn(in_channels, hidden_channels, kernel_size, 1, residual=(not first),
+                   attention=attention, attention_params=attention_params),
+            st_gcn(hidden_channels, out_channels, kernel_size, 1, residual=(not first),
+                   attention=attention, attention_params=attention_params),
         ))
 
     return block
@@ -76,7 +80,9 @@ class FlowStep(nn.Module):
             first=False,
             strategy='uniform',
             max_hops=8,
-            device='cuda:0'
+            device='cuda:0',
+            attention='none',
+            attention_params=None,
     ):
         super().__init__()
         self.device = device
@@ -108,12 +114,14 @@ class FlowStep(nn.Module):
         if flow_coupling == "additive":
             self.block = get_stgcn(in_channels // 2, in_channels // 2, hidden_channels,
                                    temporal_kernel_size=temporal_kernel_size, spatial_kernel_size=self.A.size(0),
-                                   first=first
+                                   first=first,
+                                   attention=attention, attention_params=attention_params,
                                    )
         elif flow_coupling == "affine":
             self.block = get_stgcn(in_channels // 2, hidden_channels, in_channels,
                                    temporal_kernel_size=temporal_kernel_size, spatial_kernel_size=self.A.size(0),
-                                   first=first)
+                                   first=first,
+                                   attention=attention, attention_params=attention_params)
 
         if edge_importance_weighting:
             self.edge_importance = nn.ParameterList([
@@ -216,6 +224,8 @@ class FlowNet(nn.Module):
             strategy='uniform',
             max_hops=8,
             device='cuda:0',
+            attention='none',
+            attention_params=None,
     ):
         super().__init__()
         self.device = device
@@ -225,6 +235,10 @@ class FlowNet(nn.Module):
         self.K = K
 
         C, T, V = pose_shape
+        # Build per-FlowStep attention_params with current (C, T, V)
+        att_params = attention_params
+        if attention != 'none' and attention_params is not None:
+            att_params = dict(attention_params, ctv_size=(C, T, V))
         for i in range(L):
             if i > 1:
                 # 1. Squeeze
@@ -233,6 +247,9 @@ class FlowNet(nn.Module):
                 self.output_shapes.append([-1, C, T, V])
             if temporal_kernel_size is None:
                 temporal_kernel_size = T // 2 + 1
+            # Update ctv_size after potential squeeze
+            if attention != 'none' and attention_params is not None:
+                att_params = dict(attention_params, ctv_size=(C, T, V))
             # 2. K FlowStep
             for k in range(K):
                 last = (k == K - 1)
@@ -252,6 +269,8 @@ class FlowNet(nn.Module):
                         strategy=strategy,
                         max_hops=max_hops,
                         device=device,
+                        attention=attention,
+                        attention_params=att_params,
                     )
                 )
                 self.output_shapes.append([-1, C, T, V])
@@ -294,7 +313,9 @@ class STG_NF(nn.Module):
             temporal_kernel_size=None,
             strategy='uniform',
             max_hops=8,
-            device='cuda:0'
+            device='cuda:0',
+            attention='none',
+            attention_params=None,
     ):
         super().__init__()
         self.flow = FlowNet(
@@ -311,6 +332,8 @@ class STG_NF(nn.Module):
             strategy=strategy,
             max_hops=max_hops,
             device=device,
+            attention=attention,
+            attention_params=attention_params,
         )
         self.R = R
         self.learn_top = learn_top

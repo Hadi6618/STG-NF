@@ -85,6 +85,12 @@ def init_parser(default_data_dir='data/', default_exp_dir='data/exp_dir'):
     parser.add_argument('--flow_permutation', type=str, default='permute', help='Permutation layer type')
     parser.add_argument('--adj_strategy', type=str, default='uniform', help='Adjacency matrix strategy')
     parser.add_argument('--max_hops', type=int, default=8, help='Adjacency matrix neighbours')
+    parser.add_argument('--attention', type=str, default='none',
+                        choices=['none', 'dual', 'triplet', 'skeleton', 'frame'],
+                        help='Attention mechanism in st_gcn blocks (default: none)')
+    parser.add_argument('--n_heads', type=int, default=1, help='Number of attention heads')
+    parser.add_argument('--n_mecatt', type=int, default=1, help='Number of attention applications in series per st_gcn block')
+    parser.add_argument('--n_mecatt_inside', type=int, default=1, help='Number of inner attention iterations inside each application')
 
     return parser
 

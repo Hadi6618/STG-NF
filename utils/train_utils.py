@@ -4,6 +4,14 @@ import torch
 
 
 def init_model_params(args, dataset):
+    attention_params = None
+    if getattr(args, 'attention', 'none') != 'none':
+        attention_params = {
+            'n_heads': getattr(args, 'n_heads', 1),
+            'n_mecatt': getattr(args, 'n_mecatt', 1),
+            'n_mecatt_inside': getattr(args, 'n_mecatt_inside', 1),
+            'device': args.device,
+        }
     return {
         'pose_shape': dataset["test"][0][0].shape if args.model_confidence else dataset["test"][0][0][:2].shape,
         'hidden_channels': args.model_hidden_dim,
@@ -20,6 +28,8 @@ def init_model_params(args, dataset):
         'strategy': args.adj_strategy,
         'max_hops': args.max_hops,
         'device': args.device,
+        'attention': getattr(args, 'attention', 'none'),
+        'attention_params': attention_params,
     }
 
 
