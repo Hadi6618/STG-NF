@@ -7,6 +7,16 @@ on ``(B, C, T, V)`` pose tensors.
 All modules accept explicit constructor parameters instead of relying on
 global CLI args, so the module works cleanly when imported from a notebook
 or any context that does not call ``argparse`` at import time.
+
+Projection sizing
+-----------------
+The reference implementation uses a *full* projection
+``Linear(num_heads * C*T*V, C*T*V)`` which is extremely parameter-heavy
+(e.g. ~1.68M params per attention instance for the default ShanghaiTech
+shape ``(3, 24, 18)``).  Pass ``proj_type='bottleneck'`` to use a low-rank
+two-layer projection ``Linear(num_heads*C*T*V, bottleneck) ->
+Linear(bottleneck, C*T*V)`` that reduces parameters by roughly
+``C*T*V / bottleneck`` while keeping the same forward/backward shape.
 """
 
 import torch
@@ -25,6 +35,11 @@ class MultiHeadAttention(nn.Module):
         opt: Pooling strategy — ``'maxpool'`` or ``'zpool'``.
         n_mecatt_inside: Number of inner iterations per forward call.
         device: Device string (e.g. ``'cuda:0'``).
+        proj_type: ``'full'`` for ``Linear(num_heads*C*T*V, C*T*V)`` (reference
+            behaviour, very large) or ``'bottleneck'`` for a low-rank two-layer
+            projection that drastically reduces parameter count.
+        bottleneck_dim: Width of the bottleneck. Only used when
+            ``proj_type == 'bottleneck'``.
     """
 
     def __init__(
@@ -37,13 +52,18 @@ class MultiHeadAttention(nn.Module):
         opt="maxpool",
         n_mecatt_inside=1,
         device="cuda:0",
+        proj_type="full",
+        bottleneck_dim=64,
     ):
         super().__init__()
         self.num_heads = num_heads
         self.attention_type = attention_type
         self.opt = opt
         self.n_mecatt_inside = n_mecatt_inside
+        self.proj_type = proj_type
         C, T, V = ctv_size
+        ctv = C * T * V
+        in_features = num_heads * ctv
 
         self.convs = nn.ModuleList([
             nn.Conv2d(in_channels, out_channels, kernel_size=(3, 7), padding="same", bias=True)
@@ -53,7 +73,19 @@ class MultiHeadAttention(nn.Module):
             nn.BatchNorm2d(out_channels) for _ in range(num_heads)
         ])
         self.sigmoid = nn.Sigmoid()
-        self.projection = nn.Linear(num_heads * C * T * V, C * T * V)
+
+        if proj_type == "full":
+            # Original reference: huge Linear(num_heads * C*T*V, C*T*V).
+            self.projection = nn.Linear(in_features, ctv)
+        elif proj_type == "bottleneck":
+            # Low-rank: Linear(num_heads * C*T*V, bottleneck) -> Linear(bottleneck, C*T*V).
+            self.projection = nn.Sequential(
+                nn.Linear(in_features, bottleneck_dim),
+                nn.ReLU(inplace=False),
+                nn.Linear(bottleneck_dim, ctv),
+            )
+        else:
+            raise ValueError(f"Unknown proj_type: {proj_type!r}")
 
         self.to(device)
 
@@ -97,17 +129,20 @@ class MultiHeadAttention(nn.Module):
 class DualAttention(nn.Module):
     """Dual-Attention (DAM): average of skeleton + frame attention + residual."""
 
-    def __init__(self, ctv_size, n_heads=1, n_mecatt_inside=1, device="cuda:0"):
+    def __init__(self, ctv_size, n_heads=1, n_mecatt_inside=1, device="cuda:0",
+                 proj_type="full", bottleneck_dim=64):
         super().__init__()
         self.att_skl = MultiHeadAttention(
             1, 1, ctv_size,
             num_heads=n_heads, attention_type="skeleton",
             opt="maxpool", n_mecatt_inside=n_mecatt_inside, device=device,
+            proj_type=proj_type, bottleneck_dim=bottleneck_dim,
         )
         self.att_frame = MultiHeadAttention(
             1, 1, ctv_size,
             num_heads=n_heads, attention_type="frame",
             opt="maxpool", n_mecatt_inside=n_mecatt_inside, device=device,
+            proj_type=proj_type, bottleneck_dim=bottleneck_dim,
         )
 
     def forward(self, x):
@@ -117,22 +152,26 @@ class DualAttention(nn.Module):
 class TripletAttention(nn.Module):
     """Triplet-Attention: average of skeleton + frame + channel attention + residual."""
 
-    def __init__(self, ctv_size, n_heads=1, n_mecatt_inside=1, device="cuda:0"):
+    def __init__(self, ctv_size, n_heads=1, n_mecatt_inside=1, device="cuda:0",
+                 proj_type="full", bottleneck_dim=64):
         super().__init__()
         self.att_skl = MultiHeadAttention(
             2, 1, ctv_size,
             num_heads=n_heads, attention_type="skeleton",
             opt="zpool", n_mecatt_inside=n_mecatt_inside, device=device,
+            proj_type=proj_type, bottleneck_dim=bottleneck_dim,
         )
         self.att_frame = MultiHeadAttention(
             2, 1, ctv_size,
             num_heads=n_heads, attention_type="frame",
             opt="zpool", n_mecatt_inside=n_mecatt_inside, device=device,
+            proj_type=proj_type, bottleneck_dim=bottleneck_dim,
         )
         self.att_identity = MultiHeadAttention(
             2, 1, ctv_size,
             num_heads=n_heads, attention_type="channel",
             opt="zpool", n_mecatt_inside=n_mecatt_inside, device=device,
+            proj_type=proj_type, bottleneck_dim=bottleneck_dim,
         )
 
     def forward(self, x):
@@ -142,12 +181,14 @@ class TripletAttention(nn.Module):
 class SkeletonAttention(nn.Module):
     """Skeleton-only attention + residual."""
 
-    def __init__(self, ctv_size, n_heads=1, n_mecatt_inside=1, device="cuda:0"):
+    def __init__(self, ctv_size, n_heads=1, n_mecatt_inside=1, device="cuda:0",
+                 proj_type="full", bottleneck_dim=64):
         super().__init__()
         self.att = MultiHeadAttention(
             1, 1, ctv_size,
             num_heads=n_heads, attention_type="skeleton",
             opt="maxpool", n_mecatt_inside=n_mecatt_inside, device=device,
+            proj_type=proj_type, bottleneck_dim=bottleneck_dim,
         )
 
     def forward(self, x):
@@ -157,19 +198,22 @@ class SkeletonAttention(nn.Module):
 class FrameAttention(nn.Module):
     """Frame-only attention + residual."""
 
-    def __init__(self, ctv_size, n_heads=1, n_mecatt_inside=1, device="cuda:0"):
+    def __init__(self, ctv_size, n_heads=1, n_mecatt_inside=1, device="cuda:0",
+                 proj_type="full", bottleneck_dim=64):
         super().__init__()
         self.att = MultiHeadAttention(
             1, 1, ctv_size,
             num_heads=n_heads, attention_type="frame",
             opt="maxpool", n_mecatt_inside=n_mecatt_inside, device=device,
+            proj_type=proj_type, bottleneck_dim=bottleneck_dim,
         )
 
     def forward(self, x):
         return self.att(x)
 
 
-def build_attention_module(attention_type, ctv_size, n_heads, n_mecatt_inside, device):
+def build_attention_module(attention_type, ctv_size, n_heads, n_mecatt_inside, device,
+                           proj_type="full", bottleneck_dim=64):
     """Factory: return an ``nn.Module`` for the requested attention variant.
 
     Args:
@@ -178,6 +222,8 @@ def build_attention_module(attention_type, ctv_size, n_heads, n_mecatt_inside, d
         n_heads: Number of attention heads.
         n_mecatt_inside: Inner iterations per forward call.
         device: Target device string.
+        proj_type: ``'full'`` (reference behaviour) or ``'bottleneck'``.
+        bottleneck_dim: Bottleneck width (only used when ``proj_type='bottleneck'``).
 
     Returns:
         An ``nn.Module`` whose ``forward(x)`` applies the attention, or
@@ -185,12 +231,20 @@ def build_attention_module(attention_type, ctv_size, n_heads, n_mecatt_inside, d
     """
     if attention_type == "none":
         return None
+    kwargs = dict(
+        ctv_size=ctv_size,
+        n_heads=n_heads,
+        n_mecatt_inside=n_mecatt_inside,
+        device=device,
+        proj_type=proj_type,
+        bottleneck_dim=bottleneck_dim,
+    )
     if attention_type == "dual":
-        return DualAttention(ctv_size, n_heads, n_mecatt_inside, device)
+        return DualAttention(**kwargs)
     if attention_type == "triplet":
-        return TripletAttention(ctv_size, n_heads, n_mecatt_inside, device)
+        return TripletAttention(**kwargs)
     if attention_type == "skeleton":
-        return SkeletonAttention(ctv_size, n_heads, n_mecatt_inside, device)
+        return SkeletonAttention(**kwargs)
     if attention_type == "frame":
-        return FrameAttention(ctv_size, n_heads, n_mecatt_inside, device)
+        return FrameAttention(**kwargs)
     raise ValueError(f"Unknown attention_type: {attention_type!r}")

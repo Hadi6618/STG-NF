@@ -60,7 +60,12 @@ conda activate STG-NF
 │       │   └── validation
 │       └── videos
 ├── models
-│   └── STG_NF
+│   └── STG_NF
+│       ├── attention.py      # Attention mechanisms (Dual, Triplet, etc.)
+│       ├── stgcn.py          # ST-GCN block with optional attention
+│       ├── model_pose.py      # FlowNet, FlowStep, STG_NF model
+│       └── ...
+├── stgnf_export_scores.py     # Per-video score exporter for ensemble fusion
 └── utils
 
 ```
@@ -87,7 +92,7 @@ Use the flag --video for video folder, otherwise assumes a folder of JPG/PNG ima
 ## Training/Testing
 Training and Evaluating is run using:
 ```
-python train_eval.py --dataset [ShanghaiTech\UBnormal]
+python train_eval.py --dataset [ShanghaiTech|UBnormal|Avenue]
 ```
 
 Evaluation of our pretrained model can be done using:
@@ -104,6 +109,105 @@ Supervised UBnormal
 ```
 python train_eval.py --dataset UBnormal --seg_len 16 --R 10 --checkpoint checkpoints/UBnormal_supervised_79_2.tar
 ```
+
+## Attention Mechanisms
+
+ST-GCN blocks optionally support **learnable attention** modules inspired by
+[Abnormal Human Behaviour Detection using Normalising Flows and Attention Mechanisms](https://github.com/mazhouda/Abnormal-Human-Behaviour-Detection-using-Normalising-Flows-and-Attention-Mechanisms).
+Attention is applied **after** the standard GCN → TCN → ReLU pass inside each
+`st_gcn` block and is controlled via four CLI flags.
+
+### Attention Types
+
+| Type | Streams | Pooling | Description |
+|---|---|---|---|
+| `none` (default) | — | — | Original STG-NF — no attention |
+| `skeleton` | Skeleton | maxpool | Attends to spatial joint relationships |
+| `frame` | Frame | maxpool | Attends to temporal dynamics across frames |
+| `dual` | Skeleton + Frame | maxpool | DAM: averaged skeleton & frame attention + residual |
+| `triplet` | Skeleton + Frame + Channel | zpool | Triplet: averaged three-stream attention + residual |
+
+### CLI Arguments
+
+| Flag | Default | Choices | Description |
+|---|---|---|---|
+| `--attention` | `none` | `none`, `skeleton`, `frame`, `dual`, `triplet` | Attention variant to use in every `st_gcn` block |
+| `--n_heads` | `1` | int | Number of parallel attention heads |
+| `--n_mecatt` | `1` | int | Number of sequential attention applications per `st_gcn` forward pass |
+| `--n_mecatt_inside` | `1` | int | Inner iterations inside each attention module |
+| `--freeze_attention` | off | flag | Initialize attention once and never update it (fixed random projection). Reproduces the reference repo's accidental behaviour. |
+| `--attention_lr_mult` | `1.0` | float | Multiplier on the base LR for attention params (e.g. `0.1` = 10× slower). |
+| `--attention_wd_mult` | `1.0` | float | Multiplier on the base weight decay for attention params. |
+| `--attention_proj_type` | `full` | `full`, `bottleneck` | `full` = `Linear(C·T·V, C·T·V)` (reference, huge); `bottleneck` = low-rank projection. |
+| `--attention_bottleneck_dim` | `64` | int | Bottleneck width (only when `--attention_proj_type bottleneck`). |
+
+### Important: Overfitting on Small Datasets
+
+The default `full` projection adds **~27M trainable params** (dual) or **~40M** (triplet) on top of the **1,236-param** base STG-NF. Training all those params on ShanghaiTech (~330 clips) or Avenue (16 clips) causes severe overfitting and **drops AUC below the no-attention baseline**.
+
+This differs from the reference repo, whose attention params are *accidentally never trained* (created fresh on every forward pass), so they act as a harmless fixed random projection. Three strategies are provided to handle this:
+
+| Strategy | Flag(s) | When to use |
+|---|---|---|
+| **Freeze** attention (fixed random projection) | `--freeze_attention` | Best for matching the reference repo's ~83% numbers on small datasets. Attention is initialized once and never updated. |
+| **Regularize** attention (slower LR, higher WD) | `--attention_lr_mult 0.1 --attention_wd_mult 5` | When you want attention to *learn* but converge slowly. Tune the multipliers. |
+| **Reduce** attention capacity (bottleneck) | `--attention_proj_type bottleneck --attention_bottleneck_dim 64` | Drops dual's params from 27M to ~2.7M (90% smaller). Lets attention actually learn without overfitting. |
+
+These can be combined, e.g. bottleneck + low LR:
+```
+python train_eval.py --dataset ShanghaiTech --attention dual \
+    --attention_proj_type bottleneck --attention_bottleneck_dim 64 \
+    --attention_lr_mult 0.1 --attention_wd_mult 5
+```
+
+### Recommended Configurations
+
+| Dataset | Attention | Strategy | Rationale |
+|---|---|---|---|
+| **Avenue** (small, 16 train clips) | `dual` | `--freeze_attention` | Motion-based anomalies; freezing prevents overfitting on tiny dataset |
+| **ShanghaiTech** (~330 train clips) | `triplet` | `--attention_proj_type bottleneck --attention_bottleneck_dim 64` | Enough data to learn, but bottleneck prevents the 40M-param explosion |
+
+### Examples
+
+Train with frozen Dual Attention (matches reference behaviour):
+```
+python train_eval.py --dataset Avenue --attention dual --freeze_attention
+```
+
+Train with bottleneck Triplet Attention on ShanghaiTech:
+```
+python train_eval.py --dataset ShanghaiTech --attention triplet \
+    --attention_proj_type bottleneck --attention_bottleneck_dim 64
+```
+
+Evaluate a Triplet Attention checkpoint on ShanghaiTech:
+```
+python train_eval.py --dataset ShanghaiTech --attention triplet \
+    --attention_proj_type bottleneck --attention_bottleneck_dim 64 \
+    --checkpoint checkpoints/ShanghaiTech_triplet.tar
+```
+
+> **Note**: The `--attention_proj_type` / `--attention_bottleneck_dim` / `--freeze_attention` flags **must match** between training and evaluation, otherwise the checkpoint will not load.
+
+### Architecture Details
+
+- **Implementation**: `models/STG_NF/attention.py` — attention is implemented as proper `nn.Module` subclasses (unlike the reference repo), so parameters are registered, trainable, and saved in checkpoints.
+- **Integration**: `models/STG_NF/stgcn.py` — each `st_gcn` block optionally holds an attention submodule; args are threaded from `STG_NF → FlowNet → FlowStep → get_stgcn → st_gcn`.
+- **Backward compatibility**: Using `--attention none` (default) produces a model with identical architecture and checkpoint keys to the original STG-NF.
+- **Tensor shape**: `(N, C, T, V)` where N=batch, C=channels, T=temporal length, V=joints.
+
+## Score Export for Ensemble Fusion
+
+Per-video frame-level anomaly scores can be exported to a pickle file for fusion
+with other models (e.g. MULDE):
+
+```
+python stgnf_export_scores.py --dataset ShanghaiTech --checkpoint checkpoints/ShanghaiTech_85_9.tar --output_pkl stgnf_scores.pkl
+```
+
+The exported pickle contains `scores_by_video` (dict keyed by video ID with
+`frame_indices`, `anomaly_scores`, and `labels` arrays) and the model's standalone
+micro AUC.
 
 ## Acknowledgments
 Our code is based on code from:

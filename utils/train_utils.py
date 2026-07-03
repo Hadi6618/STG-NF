@@ -11,6 +11,9 @@ def init_model_params(args, dataset):
             'n_mecatt': getattr(args, 'n_mecatt', 1),
             'n_mecatt_inside': getattr(args, 'n_mecatt_inside', 1),
             'device': args.device,
+            'freeze': getattr(args, 'freeze_attention', False),
+            'proj_type': getattr(args, 'attention_proj_type', 'full'),
+            'bottleneck_dim': getattr(args, 'attention_bottleneck_dim', 64),
         }
     return {
         'pose_shape': dataset["test"][0][0].shape if args.model_confidence else dataset["test"][0][0][:2].shape,
@@ -31,6 +34,48 @@ def init_model_params(args, dataset):
         'attention': getattr(args, 'attention', 'none'),
         'attention_params': attention_params,
     }
+
+
+def build_param_groups(model, args):
+    """Build optimizer parameter groups with differential LR / weight decay.
+
+    Attention parameters get a separate multiplier on the base LR and weight
+    decay so they can be regularised without changing the base model's
+    optimisation. Frozen attention params (requires_grad == False) are skipped
+    entirely so the optimizer never touches them.
+
+    Returns a list of param groups suitable for ``torch.optim.*``.
+    """
+    attention_lr_mult = getattr(args, 'attention_lr_mult', 1.0)
+    attention_wd_mult = getattr(args, 'attention_wd_mult', 1.0)
+    base_lr = args.model_lr
+    base_wd = args.model_weight_decay
+    has_attention = getattr(args, 'attention', 'none') != 'none'
+
+    if not has_attention or (attention_lr_mult == 1.0 and attention_wd_mult == 1.0):
+        # No differential treatment needed — single group of all trainable params.
+        return [p for p in model.parameters() if p.requires_grad]
+
+    base_params = []
+    attention_params = []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if '.attention.' in name:
+            attention_params.append(p)
+        else:
+            base_params.append(p)
+
+    if not attention_params:
+        return [p for p in model.parameters() if p.requires_grad]
+
+    groups = [
+        {'params': base_params, 'lr': base_lr, 'weight_decay': base_wd},
+        {'params': attention_params,
+         'lr': base_lr * attention_lr_mult,
+         'weight_decay': base_wd * attention_wd_mult},
+    ]
+    return groups
 
 
 def dump_args(args, ckpt_dir):

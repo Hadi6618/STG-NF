@@ -1,5 +1,5 @@
 """
-Train\Test helper, based on awesome previous work by https://github.com/amirmk89/gepc
+Train/Test helper, based on awesome previous work by https://github.com/amirmk89/gepc
 """
 
 import os
@@ -9,15 +9,39 @@ import torch
 import torch.optim as optim
 from tqdm import tqdm
 
+from utils.train_utils import build_param_groups
+
 
 def adjust_lr(optimizer, epoch, lr=None, lr_decay=None, scheduler=None):
+    """Decay the base LR while preserving per-group LR multipliers.
+
+    When ``build_param_groups`` creates separate groups for attention params
+    (with ``lr = base_lr * mult``), a naive ``param_group['lr'] = new_lr``
+    loop would wipe out the multiplier.  We instead scale each group's LR
+    by the same decay ratio so the multiplier relationship is preserved.
+    """
     if scheduler is not None:
         scheduler.step()
         new_lr = scheduler.get_lr()[0]
+        # Scheduler already set group LRs; preserve multipliers if present.
+        if len(optimizer.param_groups) > 1:
+            base_group = optimizer.param_groups[0]
+            base_ratio = new_lr / base_group['lr'] if base_group['lr'] else 1.0
+            for group in optimizer.param_groups:
+                group['lr'] = group['lr'] * base_ratio
     elif (lr is not None) and (lr_decay is not None):
         new_lr = lr * (lr_decay ** epoch)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = new_lr
+        # Compute decay ratio relative to the *base* group's current LR so
+        # that any per-group multiplier (e.g. attention_lr_mult) is preserved.
+        base_group = optimizer.param_groups[0]
+        old_base = base_group.get('lr', lr)
+        if len(optimizer.param_groups) > 1 and old_base:
+            ratio = new_lr / old_base if old_base else 1.0
+            for group in optimizer.param_groups:
+                group['lr'] = group['lr'] * ratio
+        else:
+            for group in optimizer.param_groups:
+                group['lr'] = new_lr
     else:
         raise ValueError('Missing parameters for LR adjustment')
     return new_lr
@@ -49,7 +73,11 @@ class Trainer:
         if optimizer_f is None:
             self.optimizer = self.get_optimizer()
         else:
-            self.optimizer = optimizer_f(self.model.parameters())
+            # Build param groups so attention params can have a differential
+            # LR / weight decay. When attention is 'none' or multipliers are
+            # both 1.0, build_param_groups returns a plain list (single group).
+            param_groups = build_param_groups(model, args)
+            self.optimizer = optimizer_f(param_groups)
         if scheduler_f is None:
             self.scheduler = None
         else:

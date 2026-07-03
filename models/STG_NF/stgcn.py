@@ -101,7 +101,9 @@ class st_gcn(nn.Module):
                 original ST-GCN behaviour.
             attention_params: Dict with keys ``'n_heads'``,
                 ``'n_mecatt_inside'``, ``'ctv_size'`` (tuple C,T,V),
-                ``'device'``.
+                ``'device'``, and optionally ``'freeze'`` (bool),
+                ``'proj_type'`` (``'full'``|``'bottleneck'``),
+                ``'bottleneck_dim'`` (int).
         """
         super().__init__()
 
@@ -144,6 +146,7 @@ class st_gcn(nn.Module):
 
         # ---- optional attention module ----
         self._n_mecatt = 1  # how many times to apply attention per forward
+        self._attention_frozen = False
         if attention != 'none' and attention_params is not None:
             att_mod = build_attention_module(
                 attention_type=attention,
@@ -151,11 +154,35 @@ class st_gcn(nn.Module):
                 n_heads=attention_params.get('n_heads', 1),
                 n_mecatt_inside=attention_params.get('n_mecatt_inside', 1),
                 device=attention_params.get('device', 'cuda:0'),
+                proj_type=attention_params.get('proj_type', 'full'),
+                bottleneck_dim=attention_params.get('bottleneck_dim', 64),
             )
             self.attention = att_mod  # registered as submodule (nn.Module or None)
             self._n_mecatt = attention_params.get('n_mecatt', 1)
+            # Optional: freeze attention params so they act as a fixed (random)
+            # projection and are never updated by the optimizer. This mirrors
+            # the reference repo behaviour where attention params are created
+            # fresh each forward and therefore never trained.
+            if attention_params.get('freeze', False):
+                for p in self.attention.parameters():
+                    p.requires_grad_(False)
+                # Keep BatchNorm in eval mode so running stats are not updated.
+                self.attention.eval()
+                self._attention_frozen = True
         else:
             self.attention = None
+
+    def train(self, mode=True):
+        """Override to keep frozen attention modules in eval mode.
+
+        PyTorch's default ``.train()`` recursion would flip a frozen
+        attention submodule back into training mode, re-enabling BatchNorm
+        running-stat updates. We re-force ``eval()`` after the parent call.
+        """
+        super().train(mode)
+        if self._attention_frozen and self.attention is not None:
+            self.attention.eval()
+        return self
 
     def forward(self, x, A):
 

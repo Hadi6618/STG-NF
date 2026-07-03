@@ -91,6 +91,24 @@ def init_parser(default_data_dir='data/', default_exp_dir='data/exp_dir'):
     parser.add_argument('--n_heads', type=int, default=1, help='Number of attention heads')
     parser.add_argument('--n_mecatt', type=int, default=1, help='Number of attention applications in series per st_gcn block')
     parser.add_argument('--n_mecatt_inside', type=int, default=1, help='Number of inner attention iterations inside each application')
+    parser.add_argument('--freeze_attention', action='store_true',
+                        help='Initialize attention once (deterministic) and never update its params. '
+                             'Reproduces the reference repo behaviour where attention acts as a fixed '
+                             'random projection. Recommended for small datasets.')
+    parser.add_argument('--attention_lr_mult', type=float, default=1.0,
+                        help='Multiplier on the base LR for attention params (e.g. 0.1 = 10x slower). '
+                             'Only used when attention is trainable. Default 1.0 (same as base).')
+    parser.add_argument('--attention_wd_mult', type=float, default=1.0,
+                        help='Multiplier on the base weight decay for attention params. '
+                             'Only used when attention is trainable. Default 1.0 (same as base).')
+    parser.add_argument('--attention_proj_type', type=str, default='full',
+                        choices=['full', 'bottleneck'],
+                        help="Attention projection type. 'full' = Linear(C*T*V, C*T*V) matching "
+                             "the reference repo (huge). 'bottleneck' = Linear(C*T*V, bottleneck_dim, C*T*V), "
+                             "drastically reducing params. Default: full.")
+    parser.add_argument('--attention_bottleneck_dim', type=int, default=64,
+                        help="Bottleneck dimension for the attention projection. Only used when "
+                             "--attention_proj_type=bottleneck. Default: 64.")
 
     return parser
 
