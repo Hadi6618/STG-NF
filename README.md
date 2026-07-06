@@ -1,126 +1,167 @@
-# Normalizing Flows for Human Pose Anomaly Detection [ICCV 2023]
-[![arXiv](https://img.shields.io/badge/arXiv-<2211.10946>-<COLOR>.svg)](https://arxiv.org/abs/2211.10946)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/normalizing-flows-for-human-pose-anomaly/anomaly-detection-on-shanghaitech)](https://paperswithcode.com/sota/anomaly-detection-on-shanghaitech?p=normalizing-flows-for-human-pose-anomaly)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/normalizing-flows-for-human-pose-anomaly/anomaly-detection-on-ubnormal)](https://paperswithcode.com/sota/anomaly-detection-on-ubnormal?p=normalizing-flows-for-human-pose-anomaly)
+# STG-NF — Pose Stream for the PRISM Framework
 
+> This repository contains the **pose-based** subcomponent of
+> [PRISM](https://github.com/Hadi6618/PRISM) (Pose + RGB Integration for
+> Scene Monitoring), a two-stream late-fusion framework for Video Anomaly
+> Detection.
 
+STG-NF models normal human motion with **Spatio-Temporal Graph Normalizing
+Flows**. Each person is represented as a graph of 17 COCO keypoints tracked
+across time, embedded by a Graph Convolutional Network, and mapped to a
+latent Gaussian distribution through a stack of bijective coupling layers.
+At test time, the negative log-likelihood of a pose window under the learned
+flow serves as the anomaly score — unusual motions (fighting, falling,
+loitering) receive low likelihood.
 
-The official PyTorch implementation of the paper [**"Normalizing Flows for Human Pose Anomaly Detection"**](https://arxiv.org/abs/2211.10946).
+> **Paper:** *Normalizing Flows for Human Pose Anomaly Detection*, ICCV 2023 —
+> [arXiv:2211.10946](https://arxiv.org/abs/2211.10946) ·
+> [original code](https://github.com/orhir/STG-NF)
 
+---
 
-![Framework_Overview](data/arch.png)
+## Role in PRISM
 
-## Citation
-If you find this useful, please cite this work as follows:
+STG-NF is the **pose stream** of the PRISM ensemble. It detects behavioural
+anomalies — fighting, falling, stealing, loitering — by modelling the
+distribution of *normal human motion* and flagging frames whose kinematics
+deviate.
+
+| Component | Repository | What It Watches |
+| :-- | :-- | :-- |
+| **STG-NF (pose)** | **This repo** | **What people are *doing*** |
+| MULDE (appearance) | [Hadi6618/MULDE](https://github.com/Hadi6618/MULDE) | What the scene *looks like* |
+| Fusion pipeline | [Hadi6618/PRISM](https://github.com/Hadi6618/PRISM) | Combines both streams |
+
+The pose extraction, training, and score export pipeline is orchestrated from
+the PRISM repository's [`STG-NF.ipynb`](https://github.com/Hadi6618/PRISM/blob/main/STG-NF.ipynb)
+Colab notebook, which clones this repo, runs AlphaPose to extract skeleton
+keypoints, trains the normalizing flow, and exports a score pickle for the
+fusion stage.
+
+---
+
+## Repository Layout
+
 ```
-@InProceedings{Hirschorn_2023_ICCV,
-    author    = {Hirschorn, Or and Avidan, Shai},
-    title     = {Normalizing Flows for Human Pose Anomaly Detection},
-    booktitle = {Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
-    month     = {October},
-    year      = {2023},
-    pages     = {13545-13554}
-}
+STG-NF/
+├── args.py                           # CLI argument definitions and experiment directory setup
+├── dataset.py                        # Dataset loaders for ShanghaiTech, Avenue, UBnormal
+├── train_eval.py                     # Main entry point: training and evaluation
+├── stgnf_export_scores.py            # Per-video score exporter for ensemble fusion
+├── gen_data.py                       # Pose extraction script (AlphaPose + PoseFlow)
+├── models/
+│   ├── training.py                   # Trainer class (train/eval loop, checkpointing)
+│   └── STG_NF/
+│       ├── model_pose.py             # FlowNet, FlowStep, STG_NF (main model)
+│       ├── stgcn.py                  # ST-GCN block with optional attention
+│       ├── attention.py              # Attention modules (Dual, Triplet, bottleneck)
+│       ├── modules_pose.py           # Coupling layers, actnorm, invertible 1×1 conv
+│       ├── graph.py                  # Graph adjacency matrix construction
+│       ├── tgcn.py                   # Temporal Graph Convolutional Network
+│       └── utils.py                  # Model helpers
+├── utils/
+│   ├── data_utils.py                 # Pose graph transformations
+│   ├── optim_init.py                 # Optimizer and scheduler factory
+│   ├── pose_utils.py                 # Pose keypoint processing
+│   ├── scoring_utils.py              # Frame-level scoring and AUC computation
+│   └── train_utils.py                # Argument dumping, parameter counting
+├── checkpoints/                      # Pretrained model weights
+├── data/                             # Ground truth masks and architecture diagram
+│   ├── arch.png                      # Framework overview diagram
+│   ├── ShanghaiTech/gt/              # ShanghaiTech test frame masks (.npy)
+│   ├── Avenue/gt/                    # Avenue test frame masks
+│   └── UBnormal/gt/                  # UBnormal test frame masks
+├── environment.yml                   # Conda environment specification
+└── LICENSE
 ```
 
-## Getting Started
+---
 
-This code was tested on `Ubuntu 20.04.4 LTS` and requires:
-* Python 3.8
-* conda3 or miniconda3
-* CUDA capable GPU (one is enough)
+## Setup
 
-### Setup Conda Environment:
-```
-git clone https://github.com/orhir/STG-NF
+### Conda Environment
+
+```bash
+git clone https://github.com/Hadi6618/STG-NF.git
 cd STG-NF
 
-# Conda environment setup
 conda env create -f environment.yml
 conda activate STG-NF
 ```
 
-### Directory Structure
-```
-.
-├── checkpoints
-├── data
-│   ├── ShanghaiTech
-│   │   ├── gt
-│   │   │   └── test_frame_mask
-│   │   └── pose
-│   │       ├── test
-│   │       └── train
-│   └── UBnormal
-│       ├── gt
-│       ├── pose
-│       │   ├── abnormal_train
-│       │   ├── test
-│       │   ├── train
-│       │   └── validation
-│       └── videos
-├── models
-│   └── STG_NF
-│       ├── attention.py      # Attention mechanisms (Dual, Triplet, etc.)
-│       ├── stgcn.py          # ST-GCN block with optional attention
-│       ├── model_pose.py      # FlowNet, FlowStep, STG_NF model
-│       └── ...
-├── stgnf_export_scores.py     # Per-video score exporter for ensemble fusion
-└── utils
+Tested on Ubuntu 20.04 (Python 3.8, CUDA-capable GPU).
 
-```
+---
 
-### Data Directory
-Data folder, including extracted poses and GT, can be downloaded using the [link](https://drive.google.com/file/d/1o9h3Kh6zovW4FIHpNBGnYIRSbGCu-qPt/view?usp=sharing).
+## Training & Evaluation
 
-The data directory holds pose graphs and ground truth vectors for the datasets.
-A path for the directory may be configured using the arguments:
+```bash
+# Train + evaluate on ShanghaiTech (default)
+python train_eval.py --dataset ShanghaiTech
 
-    --vid_path_train
-    --vid_path_test
-    --pose_path_train
-    --pose_path_train_abnormal
-    --pose_path_test
+# Evaluate a pretrained checkpoint
+python train_eval.py --dataset ShanghaiTech --checkpoint checkpoints/ShanghaiTech_85_9.tar
 
-### Custom Dataset
-We provide a script for creating JSON files in the accepted format using [AlphaPose](https://github.com/MVIG-SJTU/AlphaPose).
-Please download into pretrained_models folders [fast_421_res152_256x192.pth](https://drive.google.com/open?id=1kfyedqyn8exjbbNmYq8XGd2EooQjPtF9)
-It is also recommended to use the YOLOX-X detector, which can be downloaded from the AlphaPose repository.
-Use the flag --video for video folder, otherwise assumes a folder of JPG/PNG images for each video.
-    python gen_data.py --alphapose_dir /path/to/AlphaPoseFloder/ --dir /input/dir/ --outdir /output/dir/ [--video]
+# Avenue
+python train_eval.py --dataset Avenue
 
-## Training/Testing
-Training and Evaluating is run using:
-```
-python train_eval.py --dataset [ShanghaiTech|UBnormal|Avenue]
-```
+# UBnormal (unsupervised)
+python train_eval.py --dataset UBnormal --seg_len 16 --checkpoint checkpoints/UBnormal_unsupervised_71_8.tar
 
-Evaluation of our pretrained model can be done using:
-
-ShanghaiTech/ShanghaiTech-HR:
-```
-python train_eval.py --dataset [ShanghaiTech/ShanghaiTech-HR] --checkpoint checkpoints/ShanghaiTech_85_9.tar
-```
-Unsupervised UBnormal
-```
-python train_eval.py --dataset UBnormal --seg_len 16 --checkpoint checkpoints/UBnormal_unsupervised_71_8.tar 
-```
-Supervised UBnormal
-```
+# UBnormal (supervised)
 python train_eval.py --dataset UBnormal --seg_len 16 --R 10 --checkpoint checkpoints/UBnormal_supervised_79_2.tar
 ```
+
+### Custom Pose Extraction
+
+For a custom video dataset, poses must first be extracted using AlphaPose:
+
+```bash
+python gen_data.py \
+    --alphapose_dir /path/to/AlphaPose/ \
+    --dir /input/video/folder/ \
+    --outdir /output/pose/folder/ \
+    --video
+```
+
+Requires the FastPose-ResNet152 weights and (optionally) the YOLOX-X detector
+from the [AlphaPose](https://github.com/MVIG-SJTU/AlphaPose) repository.
+
+---
+
+## Score Export for Ensemble Fusion
+
+Per-video frame-level anomaly scores can be exported to a pickle file for fusion
+with other models (e.g. MULDE in PRISM):
+
+```bash
+python stgnf_export_scores.py \
+    --dataset ShanghaiTech \
+    --checkpoint checkpoints/ShanghaiTech_85_9.tar \
+    --output_pkl stgnf_scores.pkl
+```
+
+The exported pickle contains:
+
+| Key | Type | Description |
+| :-- | :-- | :-- |
+| `scores_by_video` | `dict[str, dict]` | Per-video `frame_indices`, `anomaly_scores`, `labels` arrays |
+| `micro_auc` | `float` | Standalone frame-level Micro AUC |
+
+---
 
 ## Attention Mechanisms
 
 ST-GCN blocks optionally support **learnable attention** modules inspired by
-[Abnormal Human Behaviour Detection using Normalising Flows and Attention Mechanisms](https://github.com/mazhouda/Abnormal-Human-Behaviour-Detection-using-Normalising-Flows-and-Attention-Mechanisms).
+[Abnormal Human Behaviour Detection using Normalising Flows and Attention
+Mechanisms](https://github.com/mazhouda/Abnormal-Human-Behaviour-Detection-using-Normalising-Flows-and-Attention-Mechanisms).
 Attention is applied **after** the standard GCN → TCN → ReLU pass inside each
-`st_gcn` block and is controlled via four CLI flags.
+`st_gcn` block and is controlled via CLI flags.
 
 ### Attention Types
 
 | Type | Streams | Pooling | Description |
-|---|---|---|---|
+| :-- | :-- | :-- | :-- |
 | `none` (default) | — | — | Original STG-NF — no attention |
 | `skeleton` | Skeleton | maxpool | Attends to spatial joint relationships |
 | `frame` | Frame | maxpool | Attends to temporal dynamics across frames |
@@ -129,92 +170,92 @@ Attention is applied **after** the standard GCN → TCN → ReLU pass inside eac
 
 ### CLI Arguments
 
-| Flag | Default | Choices | Description |
-|---|---|---|---|
-| `--attention` | `none` | `none`, `skeleton`, `frame`, `dual`, `triplet` | Attention variant to use in every `st_gcn` block |
-| `--n_heads` | `1` | int | Number of parallel attention heads |
-| `--n_mecatt` | `1` | int | Number of sequential attention applications per `st_gcn` forward pass |
-| `--n_mecatt_inside` | `1` | int | Inner iterations inside each attention module |
-| `--freeze_attention` | off | flag | Initialize attention once and never update it (fixed random projection). Reproduces the reference repo's accidental behaviour. |
-| `--attention_lr_mult` | `1.0` | float | Multiplier on the base LR for attention params (e.g. `0.1` = 10× slower). |
-| `--attention_wd_mult` | `1.0` | float | Multiplier on the base weight decay for attention params. |
-| `--attention_proj_type` | `full` | `full`, `bottleneck` | `full` = `Linear(C·T·V, C·T·V)` (reference, huge); `bottleneck` = low-rank projection. |
-| `--attention_bottleneck_dim` | `64` | int | Bottleneck width (only when `--attention_proj_type bottleneck`). |
-
-### Important: Overfitting on Small Datasets
-
-The default `full` projection adds **~27M trainable params** (dual) or **~40M** (triplet) on top of the **1,236-param** base STG-NF. Training all those params on ShanghaiTech (~330 clips) or Avenue (16 clips) causes severe overfitting and **drops AUC below the no-attention baseline**.
-
-This differs from the reference repo, whose attention params are *accidentally never trained* (created fresh on every forward pass), so they act as a harmless fixed random projection. Three strategies are provided to handle this:
-
-| Strategy | Flag(s) | When to use |
-|---|---|---|
-| **Freeze** attention (fixed random projection) | `--freeze_attention` | Best for matching the reference repo's ~83% numbers on small datasets. Attention is initialized once and never updated. |
-| **Regularize** attention (slower LR, higher WD) | `--attention_lr_mult 0.1 --attention_wd_mult 5` | When you want attention to *learn* but converge slowly. Tune the multipliers. |
-| **Reduce** attention capacity (bottleneck) | `--attention_proj_type bottleneck --attention_bottleneck_dim 64` | Drops dual's params from 27M to ~2.7M (90% smaller). Lets attention actually learn without overfitting. |
-
-These can be combined, e.g. bottleneck + low LR:
-```
-python train_eval.py --dataset ShanghaiTech --attention dual \
-    --attention_proj_type bottleneck --attention_bottleneck_dim 64 \
-    --attention_lr_mult 0.1 --attention_wd_mult 5
-```
+| Flag | Default | Description |
+| :-- | :-- | :-- |
+| `--attention` | `none` | Attention variant (`none`, `skeleton`, `frame`, `dual`, `triplet`) |
+| `--n_heads` | `1` | Number of parallel attention heads |
+| `--n_mecatt` | `1` | Sequential attention applications per `st_gcn` forward pass |
+| `--n_mecatt_inside` | `1` | Inner iterations inside each attention module |
+| `--freeze_attention` | off | Initialize attention once and never update (fixed random projection) |
+| `--attention_lr_mult` | `1.0` | LR multiplier for attention params |
+| `--attention_wd_mult` | `1.0` | Weight decay multiplier for attention params |
+| `--attention_proj_type` | `full` | `full` or `bottleneck` projection |
+| `--attention_bottleneck_dim` | `64` | Bottleneck width (only with `bottleneck` projection) |
 
 ### Recommended Configurations
 
-| Dataset | Attention | Strategy | Rationale |
-|---|---|---|---|
-| **Avenue** (small, 16 train clips) | `dual` | `--freeze_attention` | Motion-based anomalies; freezing prevents overfitting on tiny dataset |
-| **ShanghaiTech** (~330 train clips) | `triplet` | `--attention_proj_type bottleneck --attention_bottleneck_dim 64` | Enough data to learn, but bottleneck prevents the 40M-param explosion |
+The default `full` projection adds **~27M trainable params** (dual) or **~40M**
+(triplet) on top of the **1,236-param** base STG-NF, which causes severe
+overfitting on small datasets. Three strategies are provided:
 
-### Examples
+| Strategy | Flags | Use When |
+| :-- | :-- | :-- |
+| **Freeze** | `--freeze_attention` | Best for matching the reference repo's ~83% on small datasets |
+| **Regularize** | `--attention_lr_mult 0.1 --attention_wd_mult 5` | Want attention to learn but converge slowly |
+| **Reduce** | `--attention_proj_type bottleneck --attention_bottleneck_dim 64` | Lets attention learn without the 40M-param explosion |
 
-Train with frozen Dual Attention (matches reference behaviour):
-```
+```bash
+# Frozen Dual Attention (matches reference behaviour)
 python train_eval.py --dataset Avenue --attention dual --freeze_attention
-```
 
-Train with bottleneck Triplet Attention on ShanghaiTech:
-```
+# Bottleneck Triplet Attention on ShanghaiTech
 python train_eval.py --dataset ShanghaiTech --attention triplet \
     --attention_proj_type bottleneck --attention_bottleneck_dim 64
 ```
 
-Evaluate a Triplet Attention checkpoint on ShanghaiTech:
+> **Important:** The `--attention_proj_type`, `--attention_bottleneck_dim`, and
+> `--freeze_attention` flags **must match** between training and evaluation,
+> otherwise the checkpoint will not load.
+
+---
+
+## Results (within PRISM)
+
+| Method | Stream | ShanghaiTech (Micro AUC) | Avenue (Micro AUC) |
+| :-- | :-- | ---: | ---: |
+| **STG-NF** | Pose | **84%** | **57.0%** |
+| MULDE | Appearance | 79.7% | 81.4% |
+| PRISM (fusion) | Both | 89.9% | 82.8% |
+
+STG-NF is the stronger stream on ShanghaiTech (84% vs. MULDE's 79.7%) where
+behavioural anomalies are dominant, but underperforms on Avenue (57%) where
+most anomalies are contextual (object-based). The fusion in PRISM leverages
+the complementary strengths of both streams.
+
+---
+
+## Citation
+
+```bibtex
+@InProceedings{Hirschorn_2023_ICCV,
+    author    = {Hirschorn, Or and Avidan, Shai},
+    title     = {Normalizing Flows for Human Pose Anomaly Detection},
+    booktitle = {Proceedings of the IEEE/CVF International Conference on
+                 Computer Vision (ICCV)},
+    month     = {October},
+    year      = {2023},
+    pages     = {13545-13554}
+}
+
+@misc{prism2026,
+  title   = {PRISM: Pose + RGB Integration for Scene Monitoring},
+  author  = {Hadi},
+  year    = {2026},
+  note    = {Late fusion of STG-NF and MULDE for video anomaly detection},
+  url     = {https://github.com/Hadi6618/PRISM}
+}
 ```
-python train_eval.py --dataset ShanghaiTech --attention triplet \
-    --attention_proj_type bottleneck --attention_bottleneck_dim 64 \
-    --checkpoint checkpoints/ShanghaiTech_triplet.tar
-```
-
-> **Note**: The `--attention_proj_type` / `--attention_bottleneck_dim` / `--freeze_attention` flags **must match** between training and evaluation, otherwise the checkpoint will not load.
-
-### Architecture Details
-
-- **Implementation**: `models/STG_NF/attention.py` — attention is implemented as proper `nn.Module` subclasses (unlike the reference repo), so parameters are registered, trainable, and saved in checkpoints.
-- **Integration**: `models/STG_NF/stgcn.py` — each `st_gcn` block optionally holds an attention submodule; args are threaded from `STG_NF → FlowNet → FlowStep → get_stgcn → st_gcn`.
-- **Backward compatibility**: Using `--attention none` (default) produces a model with identical architecture and checkpoint keys to the original STG-NF.
-- **Tensor shape**: `(N, C, T, V)` where N=batch, C=channels, T=temporal length, V=joints.
-
-## Score Export for Ensemble Fusion
-
-Per-video frame-level anomaly scores can be exported to a pickle file for fusion
-with other models (e.g. MULDE):
-
-```
-python stgnf_export_scores.py --dataset ShanghaiTech --checkpoint checkpoints/ShanghaiTech_85_9.tar --output_pkl stgnf_scores.pkl
-```
-
-The exported pickle contains `scores_by_video` (dict keyed by video ID with
-`frame_indices`, `anomaly_scores`, and `labels` arrays) and the model's standalone
-micro AUC.
 
 ## Acknowledgments
-Our code is based on code from:
+
+This code is based on:
+
 - [Graph Embedded Pose Clustering for Anomaly Detection](https://github.com/amirmk89/gepc)
 - [Glow](https://github.com/y0ast/Glow-PyTorch)
 
 ## License
+
 This code is distributed under a [Creative Commons LICENSE](LICENSE).
 
-Note that our code depends on other libraries and uses datasets that each have their own respective licenses that must also be followed.
+Note that our code depends on other libraries and uses datasets that each have
+their own respective licenses that must also be followed.
