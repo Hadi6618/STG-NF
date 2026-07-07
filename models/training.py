@@ -193,7 +193,7 @@ class Trainer:
             else:
                 samp = data[0][:, :2]
             with torch.no_grad():
-                z, nll = self.model(samp.float(), label=torch.ones(data[0].shape[0]), score=score)
+                z, nll = self.model(samp.float(), label=torch.ones(data[0].shape[0], device=self.args.device), score=score)
             if self.args.model_confidence:
                 nll = nll * score
             probs = torch.cat((probs, -1 * nll), dim=0)
